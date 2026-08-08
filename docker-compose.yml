@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: customerpulse-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: customerpulse
+      POSTGRES_PASSWORD: customerpulse_dev
+      POSTGRES_DB: customerpulse
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U customerpulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: customerpulse-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://customerpulse:customerpulse_dev@db:5432/customerpulse
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_PORT: 8000
+      SECRET_KEY: ${SECRET_KEY:-docker-secret-change-me}
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000,http://localhost:80
+      MAX_UPLOAD_SIZE_MB: 50
+      AI_PROVIDER: ${AI_PROVIDER:-none}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEMO_MODE: "true"
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: customerpulse-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
