@@ -1,4 +1,5 @@
 import os
+import gc
 from typing import Optional
 import pandas as pd
 from datetime import datetime
@@ -31,14 +32,10 @@ def _clear_db():
         db.close()
 
 def run_full_pipeline(upload_path: Optional[str] = None):
-    """Execute the entire data pipeline.
-
-    If ``upload_path`` is provided, that CSV is used as the source dataset;
-    otherwise the existing data generator fallback (real file if present,
-    synthetic otherwise) is used.
-    """
+    """Execute the entire data pipeline with memory optimizations for free tier hosting."""
     logger.info("Running full pipeline (upload_path=%s)", upload_path)
     init_db()
+    
     # Load data
     if upload_path and os.path.exists(upload_path):
         raw_df = pd.read_csv(upload_path)
@@ -55,6 +52,8 @@ def run_full_pipeline(upload_path: Optional[str] = None):
 
     # Feature engineering
     df_enriched = compute_all_features(df)
+    del df
+    gc.collect()
 
     # Train churn models and select best
     results, best_model = train_churn_models(df_enriched)
@@ -85,7 +84,8 @@ def run_full_pipeline(upload_path: Optional[str] = None):
     seg_res = run_segmentation(df_enriched)
     df_enriched['segment_id'] = seg_res['labels']
 
-    # Persist customers and analytics
+    # Persist customers and analytics in batches to maintain < 300MB RAM usage
+    batch_count = 0
     for _, row in df_enriched.iterrows():
         cust = Customer(
             customer_id=row['customer_id'],
@@ -134,9 +134,11 @@ def run_full_pipeline(upload_path: Optional[str] = None):
         )
         db.add(cust)
         db.flush()
-        # Analytics record
+        
         risk = row.get('risk_level', 'Low')
         prob = row.get('churn_probability', 0.1)
+        monthly = row.get('monthly_charges') or 50.0
+        
         analytics = CustomerAnalytics(
             customer_id=cust.id,
             engagement_score=row.get('engagement_score'),
@@ -148,15 +150,22 @@ def run_full_pipeline(upload_path: Optional[str] = None):
             rfm_segment=row.get('rfm_segment'),
             churn_probability=prob,
             risk_level=risk,
-            predicted_clv=row.get('monthly_charges') * 12 * (1 / max(prob, 0.01)),
-            revenue_at_risk=row.get('monthly_charges') * prob,
+            predicted_clv=monthly * 12 * (1 / max(prob, 0.01)),
+            revenue_at_risk=monthly * prob,
             segment_id=row.get('segment_id'),
             segment_name=seg_res['segment_profiles'].get(row.get('segment_id'), {}).get('name', ''),
             top_churn_drivers=explain_customer(row.to_dict())
         )
         db.add(analytics)
+        
+        batch_count += 1
+        if batch_count % 500 == 0:
+            db.commit()
+
     db.commit()
-    # Retention recommendations
     generate_recommendations(db)
-    logger.info("Full data pipeline completed.")
+    logger.info("Full data pipeline completed successfully.")
+    
+    del df_enriched, pred_df
+    gc.collect()
     db.close()

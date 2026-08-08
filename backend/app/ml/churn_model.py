@@ -7,10 +7,15 @@ from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, average_precision_score, confusion_matrix
 import joblib
 import os
+import gc
 from app.config import settings
 
 def train_churn_models(df: pd.DataFrame):
-    df_model = df.copy()
+    # Downsample for model training to conserve RAM on free tiers (512MB limit)
+    if len(df) > 3000:
+        df_model = df.sample(3000, random_state=42).copy()
+    else:
+        df_model = df.copy()
     
     # Drop non-predictive
     drop_cols = ['customer_id', 'churn_date', 'churn_reason']
@@ -28,19 +33,18 @@ def train_churn_models(df: pd.DataFrame):
     cat_cols = X.select_dtypes(include=['object', 'category']).columns
     for c in cat_cols:
         le = LabelEncoder()
-        X[c] = X[c].astype(str)
-        X[c] = le.fit_transform(X[c])
+        X.loc[:, c] = le.fit_transform(X[c].astype(str))
         
     scaler = StandardScaler()
-    X_cols = X.columns
+    X_cols = list(X.columns)
     X_scaled = scaler.fit_transform(X)
     
     X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, stratify=y, random_state=42)
     
     models = {
-        'LogisticRegression': LogisticRegression(max_iter=1000, class_weight='balanced', random_state=42),
-        'RandomForest': RandomForestClassifier(n_estimators=200, class_weight='balanced', random_state=42),
-        'GradientBoosting': GradientBoostingClassifier(random_state=42)
+        'LogisticRegression': LogisticRegression(max_iter=500, class_weight='balanced', random_state=42),
+        'RandomForest': RandomForestClassifier(n_estimators=40, max_depth=10, class_weight='balanced', random_state=42, n_jobs=1),
+        'GradientBoosting': GradientBoostingClassifier(n_estimators=40, max_depth=5, random_state=42)
     }
     
     results = {}
@@ -84,7 +88,10 @@ def train_churn_models(df: pd.DataFrame):
     os.makedirs(settings.MODELS_DIR, exist_ok=True)
     joblib.dump(best_model, os.path.join(settings.MODELS_DIR, 'best_churn_model.pkl'))
     joblib.dump(scaler, os.path.join(settings.MODELS_DIR, 'scaler.pkl'))
-    joblib.dump(list(X_cols), os.path.join(settings.MODELS_DIR, 'feature_names.pkl'))
+    joblib.dump(X_cols, os.path.join(settings.MODELS_DIR, 'feature_names.pkl'))
+    
+    del X_train, X_test, y_train, y_test, df_model
+    gc.collect()
     
     return results, best_model_name
 
@@ -94,7 +101,6 @@ def predict_churn(df: pd.DataFrame):
     features_path = os.path.join(settings.MODELS_DIR, 'feature_names.pkl')
     
     if not (os.path.exists(model_path) and os.path.exists(scaler_path) and os.path.exists(features_path)):
-        # Return dummies
         return pd.DataFrame({
             'customer_id': df.get('customer_id', []),
             'churn_probability': [0.1] * len(df),
@@ -112,12 +118,11 @@ def predict_churn(df: pd.DataFrame):
         if f not in df_copy.columns:
             df_copy[f] = 0
             
-    X = df_copy[features]
+    X = df_copy[features].copy()
     
-    # Categoricals
     cat_cols = X.select_dtypes(include=['object', 'category']).columns
     for c in cat_cols:
-        X[c] = X[c].astype(str).astype('category').cat.codes
+        X.loc[:, c] = X[c].astype(str).astype('category').cat.codes
         
     X_scaled = scaler.transform(X)
     
