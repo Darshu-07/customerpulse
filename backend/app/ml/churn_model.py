@@ -27,13 +27,13 @@ def train_churn_models(df: pd.DataFrame):
         df_model['churn'] = False # default fallback if not found
         
     y = df_model['churn'].astype(int)
-    X = df_model.drop(columns=['churn'])
+    X = df_model.drop(columns=['churn']).copy()
     
-    # Categoricals
-    cat_cols = X.select_dtypes(include=['object', 'category']).columns
+    # Categoricals - convert cleanly to integer Series to prevent pandas 2.0+ dtype errors
+    cat_cols = list(X.select_dtypes(include=['object', 'category', 'string']).columns)
     for c in cat_cols:
-        le = LabelEncoder()
-        X.loc[:, c] = le.fit_transform(X[c].astype(str))
+        codes = LabelEncoder().fit_transform(X[c].astype(str))
+        X[c] = pd.Series(codes, index=X.index, dtype='int64')
         
     scaler = StandardScaler()
     X_cols = list(X.columns)
@@ -120,9 +120,10 @@ def predict_churn(df: pd.DataFrame):
             
     X = df_copy[features].copy()
     
-    cat_cols = X.select_dtypes(include=['object', 'category']).columns
+    cat_cols = list(X.select_dtypes(include=['object', 'category', 'string']).columns)
     for c in cat_cols:
-        X.loc[:, c] = X[c].astype(str).astype('category').cat.codes
+        codes = LabelEncoder().fit_transform(X[c].astype(str))
+        X[c] = pd.Series(codes, index=X.index, dtype='int64')
         
     X_scaled = scaler.transform(X)
     

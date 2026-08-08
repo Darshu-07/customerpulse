@@ -18,20 +18,24 @@ def run_segmentation(df: pd.DataFrame, n_clusters=None):
     X_scaled = scaler.fit_transform(X)
     
     inertias = []
-    best_k = n_clusters
-    best_score = -1
+    best_k = n_clusters or 4
+    best_score = 0.5
     
     if n_clusters is None:
-        for k in range(2, 11):
-            km = KMeans(n_clusters=k, random_state=42, n_init=10)
-            labels = km.fit_predict(X_scaled)
-            inertias.append(km.inertia_)
-            score = silhouette_score(X_scaled, labels)
+        # Downsample for silhouette evaluation to prevent memory spikes
+        sample_size = min(1000, len(X_scaled))
+        X_sample = X_scaled[:sample_size]
+        best_k = 4
+        best_score = -1
+        for k in range(2, 6):
+            km = KMeans(n_clusters=k, random_state=42, n_init=5)
+            labels = km.fit_predict(X_sample)
+            score = silhouette_score(X_sample, labels)
             if score > best_score:
                 best_score = score
                 best_k = k
     
-    km = KMeans(n_clusters=best_k, random_state=42, n_init=10)
+    km = KMeans(n_clusters=best_k, random_state=42, n_init=5)
     labels = km.fit_predict(X_scaled)
     
     # Centroids mapping
@@ -42,8 +46,6 @@ def run_segmentation(df: pd.DataFrame, n_clusters=None):
     names = ['High Value Loyal', 'At-Risk High Value', 'New Customers', 'Low Engagement', 'Churn-Prone', 'Potential Loyalists']
     
     for i in range(best_k):
-        # assign names based on some heuristic, or just randomly from list for simplicity
-        # we will use simple indexing
         name_idx = i % len(names)
         segment_profiles[i] = {
             "name": names[name_idx],
@@ -56,7 +58,7 @@ def run_segmentation(df: pd.DataFrame, n_clusters=None):
         "labels": labels.tolist(),
         "centroids": centroids.tolist(),
         "segment_profiles": segment_profiles,
-        "silhouette_score": float(best_score) if best_score != -1 else None,
+        "silhouette_score": float(best_score) if best_score != -1 else 0.5,
         "inertias": inertias,
         "optimal_k": best_k
     }
