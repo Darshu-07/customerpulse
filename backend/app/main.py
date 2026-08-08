@@ -3,6 +3,8 @@ import glob
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from app.config import settings
 from app.database.connection import init_db, SessionLocal
 from app.api import dashboard, data, customers, segments, churn, revenue, retention, model, ai
@@ -53,9 +55,33 @@ def on_startup():
     
     # Auto-detect any CSV file in the data directory
     csv_files = glob.glob(os.path.join(settings.DATA_DIR, "*.csv"))
+    if not csv_files:
+        # Check root data directory if inside docker
+        csv_files = glob.glob("/app/data/*.csv") + glob.glob("../data/*.csv")
+        
     if csv_files:
         data_path = csv_files[0]  # Use the first CSV found
         logger.info("Found dataset: %s — running full pipeline.", data_path)
         run_full_pipeline(data_path)
     else:
-        logger.info("No CSV found in %s; awaiting user upload.", settings.DATA_DIR)
+        logger.info("No CSV found; awaiting user upload.")
+
+# Check for static frontend dist directory (for single container / cloud deployment)
+static_dir = "/app/static"
+if not os.path.exists(static_dir):
+    static_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "static"))
+
+if os.path.exists(static_dir):
+    logger.info(f"Serving static frontend from: {static_dir}")
+    assets_dir = os.path.join(static_dir, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+        
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        if full_path.startswith("api"):
+            return None
+        file_path = os.path.join(static_dir, full_path)
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(static_dir, "index.html"))
